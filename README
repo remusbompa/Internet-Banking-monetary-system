@@ -1,0 +1,169 @@
+/*Bompa Remus 325CB*/
+1) client.c
+-am creat socketii tcp: sockfd si udp: udp. Socketul tcp se va conecta la
+adresa serverului primita prin parametrii: ip (argv[1]) si port (argv[2]),
+salvate in structura de tip struct sockaddr_in: serv_addr
+-am folosit apelul select pentru a multiplexa citirea de comenzi de la
+tastatura (STDIN_FILENO e constnta care defineste socketul pentru stdin)
+si de la socketul tcp. In acest sens, am creat multimea de descriptori 
+pentru citire a functiei select: read_fds de tipul fd_set, formata din
+sockfd (socketul tcp ) si STDIN_FILENO (stdin).
+-se testeaza daca in urma apelului functiei select STDIN_FILENO si sockfd
+se afla in mulrtimea de socketi pe care s-au citit date: tmp_fds
+-daca s-a citit o comanda de la tastatura (FD_ISSET(STDIN_FILENO, &tmp_fds))
+aceasta se salveaza in bufferul buffer (fgets(buffer, BUFLEN-1, stdin)) si
+se citeste in bufferul command primul cuvant din buffer. Acesta trebuie sa
+fie una dintre comenzile din cerinta: login, logout,listsold,transfer,unlock
+sau quit, in caz contrar afisandu-se mesajul "Comanda invalida".
+- daca comanda este login,se salveaza parametrul ei (numarul cardului) in 
+sirul last_login, care va fi folosit la prima comanda unlock (last_login
+salveaza ultimul numar de card pe care s-a dat comanda login). Se verifica
+daca exista deja o sesiune deschisa (session_opened=1), caz in care clientul 
+returneaza codul de eroare -2. Se trimite comanda socketului sockfd, si se 
+asteapta primirea in buffer a raspunsului de la server. In cazul in care 
+raspunsul este unul de deschidere a sesiunii (mesajul din buffer incepe cu 
+"IBANK> Welcome"), se seteaza variabila session_opened pe 1.
+- daca comanda este logout, daca procesul client nu este autentificat (session
+_opened=0), se intoarce codul de eroare -1, iar in caz contrar se trimite
+comanda catre server si se salveaza rezultatul.
+- daca comanda este listsold, daca session_opened=0 se intoarce codul de 
+eroare -1 iar in caz contrar se trimite comanda serverului si se afiseaza
+rezultatul.
+- daca comanda este transfer, daca session_opened=0 se intoarce codul de
+eroare -1 iar in caz contrar se trimite comanda serverului, se afiseaza 
+rezultatul iar daca rezultatul nu e un cod de eroare (nu apare caracterul
+'-' pe pozitia a 7-a in sirul buffer, indexare incepand cu 0), se citeste
+in continuare confirmarea (care trebuie sa inceapa cu y), se trimite
+mesajul serverului si se afiseaza rezultatul.
+- daca comanda este unlock, aceasta se trimite socketului udp, spre adresa
+serverului serv_addr cu parametrul salvat in last_login si se afiseaza
+rezultatul. Daca rezultatul nu este un cod de eroare (buffer[8]!='-'), se
+citeste de la tastatura parola secreta si se trimite serverului precedata
+de parametrul last_login. Se afiseaza rezultatul primit de la server.
+- daca comanda este quit, aceasta se trimite serverului pentru a-l informa
+ca un proces client s-a deconectat iar procesul client se inchide.
+-daca s-au citit informatii pe socketul sockfd (FD_ISSET(sockfd, &tmp_fds)),
+daca comanda primita de la server este "quit", clientul se inchide iar in 
+cazul in care se citeste alta comanda se afiseaza mesajul "Comanda invalida".
+
+2)server.c
+- am creeat structura TUser pentru a reprezenta un utilizator din fisierul users
+_data.file primit ca al 2-lea parametru. Aceasta are campurile: nume,prenume,
+numar_card,pin,parola,sold corespunzatoare campurilor din fisier. Datele 
+utilizatorilor se citesc la inceputul functiei main din fisier si se salveaza
+in vectorul de utilizatori TUser[] users. 
+- am creat socketii: sockfd (pentru a primi date prin conexiune de tip tcp) si
+udp (pentru a primi date prin conexiune udp). Ambii socketi se leaga la adresa
+serverului (serv_addr), care este formata din IP-ul masinii (INADDR_ANY =>
+socketii serverului sunt legati la toate interfetele acestuia) si portul primit
+ca prim parametru. Se apeleaza functia listen si se asteapta conexiuni noi pe
+socketul tcp care sa fie acceptate.
+- pentru a apela functia select se creaza multimea descriptorilor de citire
+read_fds de tipul fd_set in care se adauga socketii sockfd (pe care se asteapta
+conexiuni noi), udp (pe care se asteapta comenzi unlock si parola secreta) si
+STDIN_FILENO (se asteapta citirea de la tastatura a comenzii quit).
+-se itereaza prin socketi cu ajutorul variabilei i si a variabilei fdmax care 
+salveaza valoarea maxima a descriptorului unui socket. Daca socketul i este in
+multimea descriptorilor de citire pe care s-au citit informatii, dupa apelul
+select: tmp_fds, atunci se verifica daca i este socketul: sockfd,udp,STDIN_FILENO 
+sau altul. 
+- daca socketul este sockfd, se apeleaza functia accept care intoarce un nou socket
+care este pus in read_fds, se actualizeaza fdmax si se adauga un nou clint listei
+de clienti: clienti (add_client(&clienti,newsockfd);). Am definit tipul TClient,
+avand campurile sockfd (descriptorul socketului clientului), prev_login (indicile
+din cadrul vestorului users al ultimului utilizatorul pe al carui numar de card
+s-a incercat logarea),nr_login (numarul de incercari esuate de login ale clientului)
+,urm (adresa celulei TClient urmatoare). Acest tip este folosit pentru a crea o lista
+de clienti: TClient* clienti, conectati tcp la server iar la comanda login va fi
+folosit pentru a tine evidenta login-urilor esuate ale fiecarui client.
+1) daca i este alt socket (nu sockfd,udp sau STDIN_FILENO), atunci se determina clientul
+din lista clienti care are socketul tcp i, apeland functia find_client(clienti,i).
+- se apeleaza functia getCont(i,asociere,N), care verifica daca exista vreun client
+i pentru care socketul sau tcp este = cu asociere[i] si intoarce i in caz ca exista
+si -1 in caz contrar. Vectorul int asociere[N], asociaza fiecaruia din cele N conturi
+din users, reprezentate prin indici de la 0 la N-1, socketul clientului pe care s-a 
+reusit operatia de login. Initial asociere[i]=-1,i=0:N-1, nefiind realizat cu succes
+niciun apel login.
+- pentru a reprezenta un transfer am creat structura TTransfer care contine campurile:
+dest (indicile in users al utilizatorului spre care se trimit bani) si suma (suma care
+se trimite catre dest). De asemenea, am creat vectorul TTransfer transferuri[N], care
+asociaza fiecarui utilizator (reprezentat prin indici de la 0 la N-1) un transfer de
+tipul TTransfer. Initial, elementele vectorului TTransfer au destinatarul -1 (nu exista
+transfer spre vreun utilizator). 
+- pentru a reprezenta un cont blocat am creat structura TClientB, care are campurile
+cont (indicile din users al utilizatorului care este blocat) si urm (adresa celulei
+TClientB urmatoare) si lista TClientB* clienti_blocati de clienti blocati.
+- pentru a reprezenta un client pentru care se asteapta introducerea parolei secrete,
+am creat structura TClientD, care contine campurile: ip,port (ip-ul si port-ul 
+conexiunii udp pe care se asteapta parola secreta), cont (indicile in users al utiliza-
+torului pentru care s-a cerut deblocarea) si urm (adresa celulei urmatoare de tipul
+TClientD). 
+-dupa apelul functiei getCont, daca s-a obtinut un indice de utilizator valid (>0) si
+daca pentru acest utlizator exista un tranfer cu un anumit destinatar 
+(transferuri[user].dest!=-1), inseamna ca a fost creat un transfer pentru acest 
+utilizator in urma comenzii transfer si acum se asteapta comanda de confirmare. Daca
+primul caracter este 'y', transferul a fost confirmat, se ia suma din soldul lui user
+si se pune in al lui dest, dupa care se sterge transferul (transferuri[user].dest=-1)
+si se trimite spre client mesajul corespunzator: "IBANK> Transfer realizat cu succes".
+In cazul in care primul caracter nu e 'y', se sterge transferul si se atrimite
+spre client codul de eroare -9.
+-in cazul in user<0 sau nu exista transfer pentru user, se verifica comanda, 
+care poate fi: login,logout,listsold,transfer sau quit.
+- daca comanda este login, se citesc paramterii comenzii:nr_card si pin. Se verifica
+daca numarul de card exista, prin apelul functiei verificare_card(users,N,numar_card),
+care intoarce indicile utilizatorului cardului daca nr de card e valid si -1 in caz
+contrar. Daca cardul e invalid se trimite clientul un code de eroare -4 si se actuali-
+zeaza nr_login pentru clientului found la 0. Se verifica daca cardul e blocat, caz in 
+care se trimite clientului un code de eroare -5 si se actualizeaza nr_login pentru 
+clientul found la 0. In cazul in care cardul e valid si nu e blocat, se varifica daca
+pin-ul e si el valid, in caz contrar se trimite clientul un code de eroare -3 si 
+daca user coincide cu prev_login, nr_login creste cu 1, alfel inseamna ca s-a dat
+login pe un alt numar de card care a fost gresit odata, deci nr_login=1. Daca s-a
+ajuns la un nr_login de 3, se trimite clientului codul de eroare -5 in loc de -3,
+se blocheaza clientul prin apelul blocare(&clienti_blocati,user) iar nr_login=0.
+Daca pin-ul este valid, dar mai exista o sesiune deschisa (asociere[user]!=-1), se
+trimite clientului codul de eroare -2 iar nr_login=0. In cazul in care pin-ul e valid
+si nu mai exista o sesiune deschisa, se deschide o sesiune ptr user (asociere[user]=i)
+si nr_login=0. In cazul in care se citeste o alta comanda (nu login), se reseteaza
+contorul pentru client: found->nr_login=0;found->prev_login=-1.
+- daca comanda este logout, asociere[user]=-1 si se trimite clientului mesajul 
+"IBANK> Clientul a fost deconectat".
+- daca comanda este listsold, se trimite clientului users[user].sold
+- daca comanda este transfer, se citesc paramterii comenzii: nr_card si suma. Se 
+verifica daca nr_card e valid, in caz contrar se trimite clientului codul de
+eroare -4. Se verifica daca suma depaseste sold-ul user-ului, caz in care setrimite
+codul de eroare -8. In cazul in care nu se intimpina cele 2 probleme, se creaza un
+transfer pentru utilizatorul user si se trimite un mesaj prin care clientul este
+rugat sa confirme transferul.
+- daca comanda este quit, se elimina socketul i din read_fds, se inchide i si se 
+elimina clientul cu socketul i din lista de clienti.
+2) daca i este socketul STDIN_FILENO, se citeste comanda de la tastatura. Daca comanda
+este quit, se sterge toti clientii,toate celulele TClientB,TClientD din clienti_blocati
+si clienti_deblocati, se inchid socketii udp si sockfd si serverul se inchide. Functia
+remove_all_clienti(&clienti,&read_fds,buffer) asigura atat eliberarea structurilor
+TClient ramase, cat si notificarea clientilor corespunzatori de inchiderea serverului
+si inchiderea socketilor tcp corespunzatori clientilor ramasi.
+3) daca socketul i este udp, se salveaza in struct sockaddr from, adresa de unde se
+primesc informatiile (ip-ul si portul), acestea fiind aceleasi pentru un client. 
+- se verifica daca pentru clientul descris de adresa din from, exista o cerere de 
+introducere a parolei secrete, prin apelul functiei:
+asked_password(clienti_deblocati,&from), care verifica daca in liste de cereri de
+deblocare clienti_deblocati exista un client cu ip-ul si portul din from. In cazul
+in care exista o astfel de cerere, se citesc numarul de card si parola din mesajul
+primit de la client, se determina utilizatorul nr de card, se elimina celula de tip
+TClientD corespunazatoare utilizatorului din clienti_deblocati prin apelul functiei:
+remove_deblocare(&clienti_deblocati,user), daca parola este corecta se elimina celula
+de tipul TClientB din clienti_blocati (se deblocheaza contul) prin apelul functiei:
+remove_blocare(&clienti_blocati,user) si se trimite mesajul "UNLOCK> Card deblocat",
+iar altfel se trimite clientului codul de eroare -7.
+- daca nu exista o cerere a parolei secrete pentru clientul coresp adresei din from,
+serverul trebuie sa primeasca comanda unlock cu parametrul nr_card. Daca cardul este
+invalid se trimite codul de eroare -4, altfel daca cardul nu e blocat se trimite 
+codul de eroare -6, altfel se verifica prin apelul functiei:
+is_deblocking(clienti_deblocati,user) daca exista deja un cont user in lista 
+clienti_deblocati, carora li se cere parola, caz in care se trimite codul de eroare -7.
+In situatia in care nu se intimpina niciuna din cele 3 probleme, se aduga un client
+descris de contul user si adresa din from in lista clienti_deblocati, carora li
+se cere parola secreta si se trimite clientului mesajul:
+"UNLOCK> Trimite parola secreta". 
+
